@@ -8,9 +8,11 @@
     "scheme": "lucymobile",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "ai.lamlab.lucy"
     },
     "android": {
+      "package": "ai.lamlab.lucy",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -34,11 +36,36 @@
             "imageWidth": 76
           }
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Lucy uses your microphone to capture spoken thoughts so they land in your memory.",
+          "speechRecognitionPermission": "Lucy converts your voice to text on-device, then sends the transcript to your private Lucy brain."
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Lucy uses your microphone to capture spoken thoughts."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Lucy uses the front camera so you can see yourself while talking to Lucy.",
+          "microphonePermission": "Lucy uses your microphone to capture spoken thoughts.",
+          "recordAudioAndroid": false
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "lucyApiUrl": ""
     }
   }
 }
