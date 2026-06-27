@@ -58,6 +58,12 @@
           "microphonePermission": "Lucy uses your microphone to capture spoken thoughts.",
           "recordAudioAndroid": false
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#0F766E"
+        }
       ]
     ],
     "experiments": {

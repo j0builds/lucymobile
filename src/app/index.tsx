@@ -18,8 +18,12 @@ import Animated, {
 } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { captureText } from '@/lib/api';
+import * as Notifications from 'expo-notifications';
+
+import { act, getToken, onLoggedOut } from '@/lib/api';
 import { hasBackend } from '@/lib/config';
+import { loginWithGithub } from '@/lib/github';
+import { parsePushData, registerForPush } from '@/lib/push';
 import { craftReply } from '@/lib/response';
 
 type Phase = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -43,11 +47,14 @@ export default function ConverseScreen() {
   const [statusLine, setStatusLine] = useState<string | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
   const [camPerm, requestCamPerm] = useCameraPermissions();
+  const [signedIn, setSignedIn] = useState(false);
 
   const breathe = useSharedValue(1);
   const reactive = useSharedValue(0);
   const speakingPulse = useSharedValue(1);
   const scrollRef = useRef<ScrollView | null>(null);
+  // When the backend asked to confirm, the next utterance re-calls act(text, true).
+  const pendingConfirm = useRef<{ text: string } | null>(null);
 
   useSpeechRecognitionEvent('start', () => {
     setPhase('listening');
@@ -93,6 +100,81 @@ export default function ConverseScreen() {
       speakingPulse.value = withTiming(1, { duration: 220 });
     }
   }, [phase, speakingPulse]);
+
+  // Track signed-in state from the token store; react to forced logout (failed
+  // token refresh) emitted by api.request().
+  useEffect(() => {
+    let mounted = true;
+    getToken().then((t) => {
+      if (mounted) setSignedIn(!!t);
+    });
+    const unsub = onLoggedOut(() => {
+      setSignedIn(false);
+      setStatusLine('signed out — sign in again');
+    });
+    return () => {
+      mounted = false;
+      unsub();
+    };
+  }, []);
+
+  // After sign-in, register this device for push. Re-runs when signedIn flips on.
+  useEffect(() => {
+    if (!signedIn) return;
+    registerForPush().catch(() => {
+      // non-fatal: app still works without push.
+    });
+  }, [signedIn]);
+
+  // Route taps on Lucy push notifications. data: { type, id }.
+  useEffect(() => {
+    const handle = (data: unknown) => {
+      const push = parsePushData(data);
+      if (!push) return;
+      if (push.type === 'reinforce') {
+        // A recall prompt — surface it and let the user speak the answer.
+        setStatusLine(`recall: ${push.id} — tap the orb to respond`);
+        // TODO: open a dedicated recall screen with the prompt body once routing
+        // beyond the single screen exists.
+      } else {
+        // needs_you / interception — log for now; needs full nav to land on a
+        // specific item screen.
+        setStatusLine(`${push.type}: ${push.id}`);
+        // TODO: navigate to the item once multi-screen routing is wired.
+      }
+    };
+
+    // Cold start: app opened from a notification.
+    Notifications.getLastNotificationResponseAsync().then(
+      (response: Notifications.NotificationResponse | null) => {
+        if (response) handle(response.notification.request.content.data);
+      },
+    );
+    // Warm: user taps a notification while the app is running/backgrounded.
+    const sub = Notifications.addNotificationResponseReceivedListener(
+      (response: Notifications.NotificationResponse) => {
+        handle(response.notification.request.content.data);
+      },
+    );
+    return () => sub.remove();
+  }, []);
+
+  const onSignInGithub = useCallback(async () => {
+    setStatusLine('opening github…');
+    const res = await loginWithGithub();
+    if (res.ok) {
+      setSignedIn(true);
+      setStatusLine('signed in');
+    } else if (res.reason === 'cancelled') {
+      setStatusLine('sign-in cancelled');
+    } else if (res.reason === 'no-backend') {
+      setStatusLine('local-only — no LUCY_API_URL yet');
+    } else if (res.reason === 'no-tokens') {
+      setStatusLine('sign-in incomplete');
+    } else {
+      setStatusLine('sign-in failed');
+    }
+  }, []);
 
   const orbStyle = useAnimatedStyle(() => {
     const base = phase === 'listening' ? 1 + reactive.value * 0.32 : breathe.value;
@@ -160,20 +242,37 @@ export default function ConverseScreen() {
       setInterim('');
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      const result = await captureText(text);
-      if (!result.ok) {
+      // Resolve a pending confirmation: this utterance answers the prior prompt.
+      const confirming = pendingConfirm.current;
+      pendingConfirm.current = null;
+
+      // Primary path: /v1/mobile/act gives us the line to speak back.
+      const result = await act(
+        confirming ? confirming.text : text,
+        confirming ? true : undefined,
+      );
+
+      let reply: string;
+      if (result.ok) {
+        setStatusLine(null);
+        reply = result.data.spokenReply || craftReply(text);
+        // Server wants a yes/no before acting — keep the original text so the
+        // next utterance re-calls act(text, true).
+        if (result.data.needsConfirm) {
+          pendingConfirm.current = { text: confirming ? confirming.text : text };
+        }
+      } else {
+        // Degraded paths: surface why, fall back to the offline stub reply.
         if (result.reason === 'no-backend') {
           setStatusLine('local-only — no LUCY_API_URL yet');
         } else if (result.reason === 'no-key') {
           setStatusLine('not signed in');
         } else {
-          setStatusLine(`backend issue`);
+          setStatusLine('backend issue');
         }
-      } else {
-        setStatusLine(null);
+        reply = craftReply(text);
       }
 
-      const reply = craftReply(text);
       const turn: Turn = {
         id: `${Date.now()}`,
         you: text,
@@ -245,6 +344,14 @@ export default function ConverseScreen() {
               <Text style={styles.welcomeSub}>
                 lucy listens, lands it in your brain, and talks back.
               </Text>
+              {hasBackend && !signedIn && (
+                <Pressable
+                  onPress={onSignInGithub}
+                  style={styles.ghButton}
+                  hitSlop={8}>
+                  <Text style={styles.ghButtonText}>sign in with github</Text>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -372,6 +479,22 @@ const styles = StyleSheet.create({
     color: MUTE,
     fontSize: 16,
     lineHeight: 22,
+  },
+  ghButton: {
+    marginTop: 22,
+    alignSelf: 'flex-start',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(20, 184, 166, 0.45)',
+    backgroundColor: '#0E1413',
+  },
+  ghButtonText: {
+    color: '#E5F3F1',
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   turn: { gap: 6 },
   youLabel: {
