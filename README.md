@@ -65,34 +65,44 @@ Two things to point this at a real Lucy backend:
 
 Empty string = local-only mode (captures stay on device, no network call, status pill goes gray).
 
-**2. API key** in SecureStore. Set programmatically:
+**2. Sign in.** Tap "sign in with github" on the welcome screen, or call `login(email, password)`. Either path stores a session token pair in SecureStore and the app auto-refreshes on `401`.
+
+For staging you can still seed a bearer manually:
 
 ```ts
 import { setApiKey } from '@/lib/api';
 await setApiKey('<bearer-token-from-staticTenantResolver-or-prod>');
 ```
 
-Until GitHub OAuth is wired, this is a manual seed. The key is hit as `Authorization: Bearer <key>` against your `apiKeyFromHeaders()` resolver.
+The token (or manual key) is sent as `Authorization: Bearer <token>` against your resolver.
 
 ## What's in this repo
 
 ```
-src/app/index.tsx     the single-screen orb + camera + TTS loop
+src/app/index.tsx     the single-screen orb + camera + TTS loop + github sign-in + push routing
 src/app/_layout.tsx   Stack root, dark theme, no tabs
-src/lib/api.ts        captureText() -> POST /v1/capture
+src/lib/api.ts        token store, authed request() w/ 401-refresh-retry, act(), login(), logout(), registerDevice(), captureText() fallback
 src/lib/config.ts     reads LUCY_API_URL from app.json extra
-src/lib/response.ts   stub reply crafter (REPLACE with /v1/ask)
-app.json              expo config, plugins, permission strings, bundle ids
+src/lib/push.ts       expo-notifications: permission + push token + registerDevice + payload parsing
+src/lib/github.ts     GitHub OAuth via expo-web-browser + deep-link token capture
+src/lib/response.ts   offline/degraded fallback reply crafter
+app.json              expo config, plugins (incl. expo-notifications), permission strings, bundle ids
 ```
 
 Bundle id: `ai.lamlab.lucy` for both iOS and Android.
 
-## What's stubbed
+## What's wired
 
-- **Lucy's reply** is a randomised acknowledgement from `src/lib/response.ts`. Swap with a call to `/v1/ask` (or direct Claude/OpenAI through the BYO router) when you want real conversational responses.
-- **Auth** is a hardcoded SecureStore key. GitHub OAuth + Lucy identity mapping is the next slice.
+- **Lucy's reply** comes from `POST /v1/mobile/act` (`act()` in `src/lib/api.ts`). The orb speaks the server's `spokenReply`. If the server returns `needsConfirm`, the orb speaks the prompt and the next utterance re-calls `act(text, true)`. `src/lib/response.ts` is now only the offline/degraded fallback.
+- **Auth** has email/password (`login()`) and a rotating-refresh session: `request()` retries once on `401` by calling `POST /v1/auth/refresh`, swapping **both** tokens (the server rotates the refresh token), and replaying the request. If refresh fails, tokens are cleared and a logged-out event fires (`onLoggedOut`). The legacy manual `setApiKey` bearer still works as a fallback.
+- **GitHub login** (`src/lib/github.ts`): "sign in with github" opens `/v1/auth/oauth/github/start` in an auth session via `expo-web-browser`, then captures `token` + `refreshToken` from the deep-link redirect (`lucymobile://auth/github`) into SecureStore. See the TODO below.
+- **Push notifications** (`src/lib/push.ts`): after sign-in the app requests permission, fetches the Expo push token, and calls `POST /v1/devices/register`. A response listener routes `data.{type,id}` (`reinforce` / `needs_you` / `interception`).
+
+## Still stubbed / TODO
+
+- **GitHub deep-link glue**: `loginWithGithub()` assumes the server redirects back with `?token=&refreshToken=`. If the server instead returns a one-time `code` to exchange, add the exchange POST where marked `// TODO` in `src/lib/github.ts`. The redirect URI the server must allow-list is `lucymobile://auth/github`.
+- **Push routing**: notification taps set a status line / log the `{type,id}`. A `reinforce` recall prompt and `needs_you`/`interception` items need a dedicated screen once routing beyond the single screen exists (marked `// TODO` in `index.tsx`).
 - **Offline queue** is not implemented. Captures while offline currently error instead of queueing for retry.
-- **Push notifications** are not wired.
 
 ## Permissions requested
 
