@@ -71,7 +71,7 @@
       "reactCompiler": true
     },
     "extra": {
-      "lucyApiUrl": ""
+      "lucyApiUrl": "https://lucy.lamlab.ai"
     }
   }
 }
